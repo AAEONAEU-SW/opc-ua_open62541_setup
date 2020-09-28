@@ -1,0 +1,125 @@
+#!/bin/bash
+#Verify if 8021q module is loaded
+lsmod | grep '8021q' > /var/log/rc.local.log
+
+#To run NTP and PTP parallel, ntp should be true in PTP master node and false in PTP slave node
+#PHC2SYS commands has also to be modified. Please see at the end of the file.
+timedatectl set-ntp false
+timedatectl >> /var/log/rc.local.log
+
+sleep 10
+
+#Get the interface name for the i210 card to be configured for TSN
+IFACE=`sudo ip a | grep 192.168.0 | awk '{ print $NF }'`
+
+#Get the number of cores
+CORES=`nproc --all`
+
+#Set the irq priority to 90 for IFACE
+PRIORITY=90
+
+################################################################################
+# Configure transmit
+################################################################################
+#Clean up any existing setting
+sudo tc qdisc del dev $IFACE root
+
+#Configure ETF
+sudo tc qdisc add dev $IFACE parent root mqprio num_tc 3 map 2 2 1 0 2 2 2 2 2 2 2 2 2 2 2 2 queues 1@0 1@1 2@2 hw 0
+MQPRIO_NUM=`sudo tc qdisc show | grep mqprio | cut -d ':' -f1 | cut -d ' ' -f3`
+sudo tc qdisc add dev $IFACE parent $MQPRIO_NUM:1 etf offload clockid CLOCK_TAI delta 150000
+sudo tc qdisc add dev $IFACE parent $MQPRIO_NUM:2 etf offload clockid CLOCK_TAI delta 150000
+
+################################################################################
+# Configure receive
+################################################################################
+ethtool --show-features $IFACE | grep ntup >> /var/log/rc.local.log
+ethtool --show-ntuple $IFACE >> /var/log/rc.local.log
+
+#Configure Multicast MAC
+#1. We should disable promiscuous multicast
+#2. We should have an exact match of the multicast address of incoming frame
+# with Multicast Filter Address (MFA) see section 7.1.1.1.2 of i210 datasheet.
+#3. TODO: For now, configured in VLAN packet with multicast.
+# But multicast MAC does not perform rules to ntuple as expected
+# This configuration of ntuple with multicast MAC and VLAN will be modified
+
+ip link set $IFACE promisc off
+
+#Enable ntuple feature
+ethtool -K $IFACE ntuple on
+ethtool --config-ntuple $IFACE delete 15
+ethtool --config-ntuple $IFACE delete 14
+ethtool --config-ntuple $IFACE delete 13
+
+ethtool --config-ntuple $IFACE flow-type ether proto 0x8100 dst 01:00:5E:7F:00:01 loc 15 action 2
+ethtool --config-ntuple $IFACE flow-type ether proto 0x8100 dst 01:00:5E:7F:00:02 loc 14 action 2
+ethtool --config-ntuple $IFACE flow-type ether proto 0x8100 dst 01:00:5E:7F:00:03 loc 13 action 2
+
+ethtool --show-features $IFACE | grep ntup >> /var/log/rc.local.log
+ethtool --show-ntuple $IFACE >> /var/log/rc.local.log
+
+ethtool -X $IFACE equal 2
+ethtool -K $IFACE rxvlan off
+
+sleep 3
+
+#Set egress policy for VLANs
+for i in `seq 1 8`; do for j in `seq 0 7`;do sudo ip link set $IFACE.$i type vlan egress $j:$j ; done; done
+#Set ingress policy for VLANs
+for i in `seq 1 8`; do for j in `seq 0 7`;do sudo ip link set $IFACE.$i type vlan ingress $j:$j ; done; done
+
+echo "tc qdisc show" >> /var/log/rc.local.log
+tc qdisc show >> /var/log/rc.local.log
+echo "ip a" >> /var/log/rc.local.log
+ip a >> /var/log/rc.local.log
+
+for i in `seq 1 8`;do cat /proc/net/vlan/$IFACE.$i >> /var/log/rc.local.log; done;
+
+################################################################################
+# Tune Linux for best possible real-time behaviour
+################################################################################
+CORESVALUE=`expr $CORES - 1`
+
+#Default mode of CPU
+for i in `seq 0 $CORESVALUE`; do cat /sys/devices/system/cpu/cpu$i/cpufreq/scaling_governor >> /var/log/rc.local.log; done;
+
+#Modify all cores of CPU to performance mode
+for i in `seq 0 $CORESVALUE`; do echo performance >> /sys/devices/system/cpu/cpu$i/cpufreq/scaling_governor; cat /sys/devices/system/cpu/cpu$i/cpufreq/scaling_governor >> /var/log/rc.local.log; done;
+
+#Set irq priority to 90 on IFACE
+for i in `ps ax | grep "irq/[0-9]*-$IFACE" | sed "s/^ *//" | cut -d" " -f1`; do sudo chrt -ap $i; sudo chrt -fp $PRIORITY $i; sudo chrt -ap $i >> /var/log/rc.local.log; done;
+
+#Disabling EEE (Energy Efficient Ethernet)
+ethtool --set-eee $IFACE eee off
+ethtool --show-eee $IFACE >> /var/log/rc.local.log
+
+################################################################################
+# Run PTP
+################################################################################
+#Clear if PTP and PHC runs before
+pkill -9 ptp4l
+pkill -9 phc2sys
+
+sleep 3
+
+#PTP - The master between nodes will be automatically detected using BMC algorithm while using the below commands.
+#sudo daemonize -E BUILD_ID=dontKillMe -o /var/log/ptp4l.log -e /var/log/ptp4l.err.log /usr/bin/taskset -c 1 chrt 90 /usr/local/sbin/ptp4l -i $IFACE -2 -mq -f /etc/linuxptp/gPTP.cfg --step_threshold=1 --fault_reset_interval=0 --announceReceiptTimeout=10 --transportSpecific=1
+
+#If required to configure PTP master and slave in favoured nodes, use the commented below commands.
+#PTP MASTER
+sudo daemonize -E BUILD_ID=dontKillMe -o /var/log/ptp4l.log -e /var/log/ptp4l.err.log /usr/bin/taskset -c 1 chrt 90 /usr/local/sbin/ptp4l -i $IFACE -2 -mq -f /etc/linuxptp/gPTP.cfg --step_threshold=1 --fault_reset_interval=0 --announceReceiptTimeout=10 --transportSpecific=1
+#PTP SLAVE
+#sudo daemonize -E BUILD_ID=dontKillMe -o /var/log/ptp4l.log -e /var/log/ptp4l.err.log /usr/bin/taskset -c 1 chrt 90 /usr/local/sbin/ptp4l -i $IFACE -2 -mq -s -f /etc/linuxptp/gPTP.cfg --step_threshold=1 --fault_reset_interval=0 --announceReceiptTimeout=10 --transportSpecific=1
+
+#PHC2SYS - Use this command when NTP is turned off (i.e., no network time)
+sudo daemonize -E BUILD_ID=dontKillMe -o /var/log/phc2sys.log -e /var/log/phc2sys.err.log /usr/bin/taskset -c 1 chrt 89 /usr/local/sbin/phc2sys -s $IFACE -c CLOCK_REALTIME --step_threshold=1 --transportSpecific=1 -w -m
+
+#If you need PTP and NTP run in parallel, first you must specify your PTP master and slave using the above commands.
+# Then, enable NTP only in PTP master PC and let its hardware clock take time from the NTP that is the user clock.
+
+#PHC2SYS command to run in PTP master node
+#sudo daemonize -E BUILD_ID=dontKillMe -o /var/log/phc2sys.log -e /var/log/phc2sys.err.log /usr/bin/taskset -c 1 chrt 89 /usr/local/sbin/phc2sys -c $IFACE -s CLOCK_REALTIME --step_threshold=1 --transportSpecific=1 -w -m
+
+#PHC2SYS command to run in PTP slave node
+#sudo daemonize -E BUILD_ID=dontKillMe -o /var/log/phc2sys.log -e /var/log/phc2sys.err.log /usr/bin/taskset -c 1 chrt 89 /usr/local/sbin/phc2sys -s $IFACE -c CLOCK_REALTIME --step_threshold=1 --transportSpecific=1 -w -m

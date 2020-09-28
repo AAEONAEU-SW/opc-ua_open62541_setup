@@ -1,0 +1,49 @@
+network:
+  version: 2
+  ethernets:
+      enp2s0:
+          dhcp4: false
+          dhcp6: false
+          addresses:
+          - 192.168.0.1/24
+  vlans:
+      enp2s0.1:
+          id: 1
+          link: enp2s0
+          addresses:
+          - 192.168.1.1/24
+      enp2s0.2:
+          id: 2
+          link: enp2s0
+          addresses:
+          - 192.168.2.1/24
+      enp2s0.3:
+          id: 3
+          link: enp2s0
+          addresses:
+          - 192.168.3.1/24
+      enp2s0.4:
+          id: 4
+          link: enp2s0
+          addresses:
+          - 192.168.4.1/24
+      enp2s0.5:
+          id: 5
+          link: enp2s0
+          addresses:
+          - 192.168.5.1/24
+      enp2s0.6:
+          id: 6
+          link: enp2s0
+          addresses:
+          - 192.168.6.1/24
+      enp2s0.7:
+          id: 7
+          link: enp2s0
+          addresses:
+          - 192.168.7.1/24
+      enp2s0.8:
+          id: 8
+          link: enp2s0
+          addresses:
+          - 192.168.8.1/24

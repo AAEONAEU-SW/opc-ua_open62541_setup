@@ -18,7 +18,7 @@ sudo make install
 sudo cp configs/gPTP.cfg /etc/linuxptp/
 cd ../
 git clone https://github.com/open62541/open62541.git
-CWD_SETUP = $(pwd)
+CWD_SETUP=$(pwd)
 cd /usr/local/src/
 sudo git clone https://github.com/xdp-project/bpf-next.git
 cd bpf-next/
@@ -27,8 +27,9 @@ sudo make defconfig
 sudo make headers_install
 cd samples/bpf
 sudo make
-cat /etc/modules | grep '8021q'
+sudo echo "8021q" >> /etc/modules
 cd $CWD_SETUP
+sudo rm /etc/netplan/01-network-manager-all.yaml
 sudo cp 01-network-manager-all.yaml.slave /etc/netplan/01-network-manager-all.yaml
 sudo netplan generate
 sudo netplan apply
